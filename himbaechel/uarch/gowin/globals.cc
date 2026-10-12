@@ -62,6 +62,18 @@ struct GowinGlobalRouter
                 id_P37C, id_P37D, id_P46A, id_P46B, id_P46C, id_P46D, id_P47A, id_P47B, id_P47C, id_P47D);
     }
 
+    // A PLL site whose output the chip database links to a clock-plane wire
+    // ([TB][LR]PLL<n>CLK<m>, e.g. the GW5AST-138C's PLL_R[0] CLKOUT0 to
+    // TRPLL0CLK0) reaches the spines through that wire, not directly.
+    bool is_pll_plane_wire(WireId wire, IdString wire_type) const
+    {
+        if (wire_type != id_GLOBAL_CLK)
+            return false;
+        const std::string name = ctx->getWireName(wire)[1].str(ctx);
+        return name.size() == 10 && (name[0] == 'T' || name[0] == 'B') && (name[1] == 'L' || name[1] == 'R') &&
+               name.compare(2, 3, "PLL") == 0 && name.compare(6, 3, "CLK") == 0;
+    }
+
     // allow io->global, global->global and global->tile clock
     bool global_pip_filter(PipId pip, WireId src_wire) const
     {
@@ -82,7 +94,8 @@ struct GowinGlobalRouter
         bool res;
         if (src == src_wire && (src_type == id_PLL_O || (!src_is_outpin))) {
             bool dst_is_spine = dst_name.str(ctx).rfind("SPINE", 0) == 0;
-            res = src_valid && (dst_is_spine || dst_type == id_PLL_O);
+            res = src_valid && (dst_is_spine || dst_type == id_PLL_O ||
+                                (src_type == id_PLL_O && is_pll_plane_wire(dst, dst_type)));
         } else {
             res = (src_valid && dst_valid) || (src_valid && is_local(dst_type)) || (is_local(src_type) && dst_valid);
         }

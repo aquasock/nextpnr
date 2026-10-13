@@ -1476,6 +1476,22 @@ struct GowinGlobalRouter
             }
         }
 
+        // TEMPORARY: route the net NPNR_GOWIN_CLK_FIRST names first within its
+        // group, so it takes the first free spine. On the GW5AST-138C the
+        // AE350's bus dies when its clock reaches the row-0 taps through
+        // GB20 and runs through GB10; TinyNES routes bus_clk first to keep
+        // it on GB10. Remove once the GB20 fault is understood and fixed.
+        if (const char *first = getenv("NPNR_GOWIN_CLK_FIRST")) {
+            IdString id = ctx->id(first);
+            for (auto *v : {&buf_nets, &clk_nets}) {
+                auto it = std::find(v->begin(), v->end(), id);
+                if (it != v->end()) {
+                    std::rotate(v->begin(), it, it + 1);
+                    log_info("experiment: routing '%s' first\n", first);
+                }
+            }
+        }
+
         // nets with DHCEN
         for (IdString net_name : dhcen_nets) {
             NetInfo *ni = ctx->nets.at(net_name).get();

@@ -2224,6 +2224,27 @@ def create_timing_info(chip: Chip, db: chipdb.Device):
 
             elif group == "fanout":
                 pass # handled in "wire"
+            elif group == "ae350":
+                # Measured by Apicula (apycula/ae350_138c_timing.py): the
+                # vendor's own setup/hold and clock-to-out at the hard SoC's
+                # bus ports, so paths to and from it are timed like any
+                # register's.
+                def ns(v):
+                    return int(round(v * 1000))
+                # Arcs are named `kind:pin:pin`: `setup_hold:CLOCK:PORT` ->
+                # [setup, hold], `clock_out:CLOCK:PORT` and `comb:FROM:TO` ->
+                # [min, max].
+                soc = tmg.add_cell_variant(speed, "AE350_SOC")
+                for name, (lo, hi) in arc.items():
+                    kind, a, b = name.split(":")
+                    if kind == "setup_hold":
+                        soc.add_setup_hold(a, b, ClockEdge.RISING, TimingValue(ns(lo)), TimingValue(ns(hi)))
+                    elif kind == "clock_out":
+                        soc.add_clock_out(a, b, ClockEdge.RISING, TimingValue(ns(lo), ns(hi)))
+                    elif kind == "comb":
+                        soc.add_comb_arc(a, b, TimingValue(ns(lo), ns(hi)))
+                    else:
+                        assert False, f"unknown AE350 timing arc {name}"
             elif group == "glbsrc":
                 # no fanout delay for clock wires
                 for name in ["CENT_SPINE_PCLK", "SPINE_TAP_PCLK", "TAP_BRANCH_PCLK"]:

@@ -116,6 +116,8 @@ struct GowinUtils
         return chip_wire_info(ctx->chip_info, wire).flags & WireFlags::FLAG_BOTTOM_HALF;
     }
     bool get_spine_select_wire(WireId spine, std::vector<std::pair<WireId, int>> &);
+    // The tiles whose ports carry spine select wires (z is 0).
+    std::vector<Loc> get_spine_select_tiles(void) const;
 
     // BSRAM
     bool has_SP32(void) const;

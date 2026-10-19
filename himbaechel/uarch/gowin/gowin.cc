@@ -68,6 +68,18 @@ struct GowinImpl : HimbaechelAPI
 
     std::set<BelId> inactive_bels;
 
+    // Logic tiles whose CLK and A ports select clock spines.  A spine that
+    // needs one is enabled only while that port is held at its constant, so no
+    // logic may be placed there: on the GW5AST-138C a flip-flop placed in
+    // such a tile took the port for its own clock and the spine clocked
+    // nothing.
+    pool<Loc> spine_select_tiles;
+    bool in_spine_select_tile(BelId bel) const
+    {
+        Loc l = ctx->getBelLocation(bel);
+        return spine_select_tiles.count(Loc(l.x, l.y, 0));
+    }
+
     // Validity checking
     struct GowinCellInfo
     {
@@ -198,6 +210,10 @@ void GowinImpl::init(Context *ctx)
     HimbaechelAPI::init(ctx);
 
     gwu.init(ctx);
+
+    for (Loc l : gwu.get_spine_select_tiles()) {
+        spine_select_tiles.insert(l);
+    }
 
     const ArchArgs &args = ctx->args;
 
@@ -1070,6 +1086,14 @@ bool GowinImpl::isBelLocationValid(BelId bel, bool explain_invalid) const
     if (!ctx->getBoundBelCell(bel)) {
         return true;
     }
+    if (bel_type.in(id_LUT4, id_DFF, id_ALU, id_RAM16SDP4, id_MUX2_LUT5, id_MUX2_LUT6, id_MUX2_LUT7,
+                    id_MUX2_LUT8) &&
+        in_spine_select_tile(bel)) {
+        if (explain_invalid) {
+            log_nonfatal_error("%s is in a spine select tile\n", ctx->nameOfBel(bel));
+        }
+        return false;
+    }
     switch (bel_type.hash()) {
     case ID_LUT4: /* fall-through */
     case ID_DFF:
@@ -1150,6 +1174,11 @@ bool GowinImpl::isValidBelForCellType(IdString cell_type, BelId bel) const
     }
 
     IdString bel_type = ctx->getBelType(bel);
+    if (bel_type.in(id_LUT4, id_DFF, id_ALU, id_RAM16SDP4, id_MUX2_LUT5, id_MUX2_LUT6, id_MUX2_LUT7,
+                    id_MUX2_LUT8) &&
+        in_spine_select_tile(bel)) {
+        return false;
+    }
     if (bel_type == id_IOB) {
         return cell_type.in(id_IBUF, id_OBUF);
     }

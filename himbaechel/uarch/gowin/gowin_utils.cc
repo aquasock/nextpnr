@@ -458,6 +458,19 @@ bool GowinUtils::get_spine_select_wire(WireId spine, std::vector<std::pair<WireI
     return !wires.empty();
 }
 
+std::vector<Loc> GowinUtils::get_spine_select_tiles(void) const
+{
+    const Extra_chip_data_POD *extra = reinterpret_cast<const Extra_chip_data_POD *>(ctx->chip_info->extra_data.get());
+
+    std::vector<Loc> tiles;
+    for (auto *recs : {&extra->spine_select_wires_top, &extra->spine_select_wires_bottom}) {
+        for (auto &rec : *recs) {
+            tiles.push_back(Loc(rec.x, rec.y, 0));
+        }
+    }
+    return tiles;
+}
+
 bool GowinUtils::has_CIN_MUX(void) const
 {
     const Extra_chip_data_POD *extra = reinterpret_cast<const Extra_chip_data_POD *>(ctx->chip_info->extra_data.get());

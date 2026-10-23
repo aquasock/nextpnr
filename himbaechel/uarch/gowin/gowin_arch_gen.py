@@ -576,6 +576,34 @@ def create_reuse_wire(tt: TileType, name: str, wire_type: str="", const_value: s
     elif wire_type:
         tt.set_wire_type(name, wire_type)
 
+
+def create_internal_net(tt: TileType, name: str, endpoints):
+    """One dedicated, fuse-free connection between bel pins of one tile.
+
+    `endpoints` is a sequence of `(bel, pin, PinType)`.  The wire carries no
+    pips at all, so the router can neither enter nor leave it: the only things
+    attached to it are the bel pins named here.  That is the model for a link
+    the silicon hard-wires, and it needs no fuses because there is nothing to
+    configure -- which is exactly what the vendor tool enforces when it
+    refuses to let a design route these nets itself:
+
+    * `OSER8_MEM.TCLK` only accepts `DQSW`/`DQSW270` from its own lane's
+      `DQS` (Gowin EDA 1.9.11.03; see TinyVCMI TOOL-006), and
+    * a `DQS` without a `DDRDLL` driving `DLLSTEP` does not build at all
+      (`PR0015`).
+
+    Both were confirmed on this board family by the vendor tool's own
+    refusals, which is why these links are not fabric wires to be named.
+
+    Callers must not create a pip to or from this wire, and must give it a
+    name that cannot collide with a fabric wire.
+    """
+    if tt.has_wire(name):
+        raise ValueError(f"internal net {name!r} already exists as a wire")
+    tt.create_wire(name)
+    for bel, pin, direction in endpoints:
+        tt.add_bel_pin(bel, pin, name, direction)
+
 def create_global_nodes(chip: Chip, db: chipdb):
     ### add nodes from the apicula db """
     global_nodes = {}

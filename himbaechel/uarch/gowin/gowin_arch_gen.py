@@ -84,6 +84,11 @@ MIPIIBUF_Z  = 302
 
 DLLDLY_Z    = 303 # : 305 reserve for 2 DLLDLYs
 
+# The GW5AST-138C DDR3 master delay-locked loop. One site is modelled; the
+# primitive is a two-cell macro, so the bel lives in the port tile and the
+# packer writes its configuration fuses in the corner cell next to it.
+DDRDLL_Z    = 306
+
 PINCFG_Z    = 400
 ADC_Z       = 401
 
@@ -1252,6 +1257,49 @@ def set_wire_flags(tt: TileType, tdesc: TypeDesc):
                 if wire_data.name == wname_id:
                     wire_data.flags |= WIRE_FLAG_CLOCK_GATE
 
+def create_ddrdll_bel(tt: TileType, db: chipdb, x: int, y: int):
+    """Create the bottom-left `DDRDLL` master's bel, and only that one.
+
+    MEASURED 2026-10-22 on the GW5AST-138C, from Gowin EDA 1.9.11.03 builds
+    compared tile by tile (TinyVCMI `tools/ddrdll_oracle/` and
+    `docs/ddr3-open-flow.md`).  The primitive is a two-cell macro:
+
+    * the port wires land in the column-1 tile of the bottom edge -- tying
+      `STOP`, `UPDNCNTL` and `RESET` to constants removes pips into `A6`,
+      `A5` and `LSR0` there, and that tile is the vendor's one-based cell
+      `(109,2)`;
+    * every configuration fuse sits in the corner cell one column to its
+      left, tile type 48, whose `DLL0` table the packer drives;
+    * `LOCK` does not reach a configurable wire at all: with `.LOCK()` open,
+      the only bits that change are the row-99 track at column 1 and the sink
+      IO.  There is therefore no honest bel pin for it yet, and a design that
+      uses `LOCK` must fail in placement rather than route a dead net.
+
+    The four parameters are the packer's business, not the router's, so they
+    are not bel pins.  Only this one site is modelled: the other three
+    masters exist, but their port tiles were not isolated, so an `INS_LOC`
+    naming them is rejected by `cst.cc` instead of landing on a wire nobody
+    has measured.  The site's tile type appears exactly once on the die, so
+    the `create_tiletype` dedup cannot copy this bel onto another tile.
+    """
+    if x != 1 or y != db.rows - 1:
+        return
+    bel = tt.create_bel("DDRDLL_BL", "DDRDLL", z = DDRDLL_Z)
+    pins = [
+        ("CLKIN",    "CLK0", PinType.INPUT),
+        ("STOP",     "A6",   PinType.INPUT),
+        ("RESET",    "LSR0", PinType.INPUT),
+        ("UPDNCNTL", "A5",   PinType.INPUT),
+    ]
+    pins += [(f"STEP[{i}]", f"Q{i}", PinType.OUTPUT) for i in range(8)]
+    for pin, wire, direction in pins:
+        create_reuse_wire(tt, wire)
+        tt.add_bel_pin(bel, pin, wire, direction)
+    # `INS_LOC "<cell>" DDRDLLM_BL;` names no index; `DDRDLLM_BL[0]` is
+    # accepted as the same site so both vendor spellings resolve.
+    for handle in ("DDRDLLM_BL[]", "DDRDLLM_BL[0]"):
+        macro_bels[handle] = (x, y, DDRDLL_Z)
+
 def create_tiletype(create_func, chip: Chip, db: chipdb, x: int, y: int, ttyp: int):
     has_extra_func = (y, x) in db.extra_func
 
@@ -1301,6 +1349,7 @@ def create_tiletype(create_func, chip: Chip, db: chipdb, x: int, y: int, ttyp: i
     create_extra_funcs(tt, db, x, y)
     create_hclk_switch_matrix(tt, db, x, y)
     create_switch_matrix(tt, db, x, y)
+    create_ddrdll_bel(tt, db, x, y)
     set_wire_flags(tt, tdesc)
     chip.set_tile_type(x, y, tdesc.tiletype)
 

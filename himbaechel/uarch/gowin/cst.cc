@@ -390,6 +390,12 @@ struct GowinCstReader
                             {"PLL_L", id_PLL},
                             {"PLL_R", id_PLL},
                             {"PLL_B", id_PLL},
+                            // One measured GW5AST-138C DDRDLL master.  The
+                            // other three macros are deliberately absent:
+                            // their port tiles were never isolated, so they
+                            // must fall out as an unknown macro instead of
+                            // resolving to a site this tree cannot justify.
+                            {"DDRDLLM_BL", id_DDRDLL},
                     };
                     std::string macro = match[2].str();
                     auto mit = macro_bel_type.find(macro);

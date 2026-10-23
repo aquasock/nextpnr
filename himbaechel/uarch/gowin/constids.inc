@@ -1433,6 +1433,11 @@ X(DLLDLY_O)
 X(DLLDLY_CLKOUT0)
 X(DLLDLY_CLKOUT1)
 
+// DDRDLL: the DDR3 master delay-locked loop.  One measured site on the
+// GW5AST-138C; see gowin_arch_gen.py DDRDLL_SITES and TinyVCMI
+// docs/ddr3-open-flow.md.
+X(DDRDLL)
+
 // segments
 X(LW_TAP)
 X(LW_TAP_0)

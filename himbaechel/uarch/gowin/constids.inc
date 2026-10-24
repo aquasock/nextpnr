@@ -1536,3 +1536,13 @@ X(ADCVALUE10)
 X(ADCVALUE11)
 X(ADCVALUE12)
 X(ADCVALUE13)
+
+// DDR3 lane serializers: OSER8_MEM and IDES8_MEM on the measured GW5AST-138C
+// lane-0 IOLOGIC positions; see gowin_arch_gen.py DQ_LANE0_IOLOGIC and
+// TinyVCMI TOOL-009.  Appended, not inserted, so earlier ids keep their values.
+X(OSER8_MEM)
+X(IDES8_MEM)
+X(TCLK)
+X(TCLK_SOURCE)
+X(TCLK_DQSW0)
+X(TCLK_DQSW270)

@@ -50,13 +50,13 @@ inline bool is_i3c(const CellInfo *cell) { return type_is_i3c(cell->type); }
 
 inline bool type_is_iologico(IdString cell_type)
 {
-    return cell_type.in(id_ODDR, id_ODDRC, id_OSER4, id_OSER8, id_OSER10, id_OVIDEO, id_IOLOGICO_EMPTY);
+    return cell_type.in(id_ODDR, id_ODDRC, id_OSER4, id_OSER8, id_OSER8_MEM, id_OSER10, id_OVIDEO, id_IOLOGICO_EMPTY);
 }
 inline bool is_iologico(const CellInfo *cell) { return type_is_iologico(cell->type); }
 
 inline bool type_is_iologici(IdString cell_type)
 {
-    return cell_type.in(id_IDDR, id_IDDRC, id_IDES4, id_IDES8, id_IDES10, id_IVIDEO, id_IOLOGICI_EMPTY);
+    return cell_type.in(id_IDDR, id_IDDRC, id_IDES4, id_IDES8, id_IDES8_MEM, id_IDES10, id_IVIDEO, id_IOLOGICI_EMPTY);
 }
 inline bool is_iologici(const CellInfo *cell) { return type_is_iologici(cell->type); }
 

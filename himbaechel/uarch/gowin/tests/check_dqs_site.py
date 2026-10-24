@@ -28,6 +28,11 @@ and three things about the model are easy to break without any build failing:
       `create_dedicated_links` refuses a wire that already belongs to a node,
       because a tile wire can belong to one node only.
 
+  test_dq_lane0_positions_are_iologic_of_marked_tiles
+      Every lane-0 position names an IOLOGIC bel the database has, its tile
+      is marked so the memory-mode pins reach no other cell of that type,
+      and every DQS output a lane link starts from is a DQS bel output.
+
 Run it with Apicula on the path, as the generator itself needs it:
 
     source tools/openflow_env.sh && python3 tests/check_dqs_site.py
@@ -123,11 +128,13 @@ class _FakeDb:
 def test_a_link_onto_a_node_wire_is_refused():
     chip = Chip("gowin", "TEST", 8, 110)
     tt = chip.create_tile_type("EMPTY")
-    for name in ("F6", "Q7", "DDRDLL_LOCK", "DQS_DQSIN"):
+    names = {"F6", "Q7", "DDRDLL_LOCK", "DQS_DQSIN"}
+    names |= {f"Q{i}" for i in range(8)} | {f"DQS_DLLSTEP{i}" for i in range(8)}
+    names |= {gen.DQS_OUTPUTS[out] for out in gen.DQ_LANE0_LINKS}
+    names |= {gen.dq_link_wire(side, pin) for _, _, side in gen.DQ_LANE0_IOLOGIC
+              for sinks in gen.DQ_LANE0_LINKS.values() for _, pin in sinks}
+    for name in sorted(names):
         tt.create_wire(name)
-    for i in range(8):
-        tt.create_wire(f"Q{i}")
-        tt.create_wire(f"DQS_DLLSTEP{i}")
     for yy in range(110):
         for xx in range(8):
             chip.set_tile_type(xx, yy, "EMPTY")
@@ -140,6 +147,23 @@ def test_a_link_onto_a_node_wire_is_refused():
     else:
         raise AssertionError("a link onto a wire already in a node was accepted")
     gen.create_dedicated_links(chip, _FakeDb(109, {}))
+
+
+def test_dq_lane0_positions_are_iologic_of_marked_tiles():
+    db = copy.copy(_db())
+    db.extra_func = copy.deepcopy(db.extra_func)
+    gen.mark_dqs_site(db)
+    for x, y, side in gen.DQ_LANE0_IOLOGIC:
+        assert f"IOLOGIC{side}" in db[y, x].bels, f"X{x}Y{y} has no IOLOGIC{side}"
+        assert "tinyvcmi_dq_lane0" in db.extra_func.get((y, x), {}), f"X{x}Y{y} is not marked"
+    ttyp = db.grid[gen.DQ_LANE0_TILES[0][1]][0]
+    others = [(r, c) for r in range(db.rows) for c in range(db.cols)
+              if db.grid[r][c] == ttyp and (c, r) not in gen.DQ_LANE0_TILES]
+    assert others, "expected unmarked cells of the lane tile type"
+    for cell in others:
+        assert "tinyvcmi_dq_lane0" not in db.extra_func.get(cell, {}), f"{cell} is marked"
+    for out in gen.DQ_LANE0_LINKS:
+        assert out in gen.DQS_OUTPUTS, f"lane link source {out} is not a DQS output"
 
 
 if __name__ == "__main__":

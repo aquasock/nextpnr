@@ -92,6 +92,31 @@ bool are_iologic_compatible(CellInfo *ci_0, CellInfo *ci_1)
     return false;
 }
 
+// `OSER8_MEM.TCLK` is hard-wired from its lane DQS's `DQSW0` or `DQSW270`, and
+// `TCLK_SOURCE` says which (Gowin refuses anything else, `CK2060`).  The chip
+// database gives the bel one pin per source, so the port is renamed onto the
+// pin its parameter names; any other value is refused here rather than
+// guessed.
+void GowinPacker::connect_mem_tclk(CellInfo &ci)
+{
+    std::string source = "DQSW";
+    if (ci.params.count(id_TCLK_SOURCE)) {
+        source = ci.params.at(id_TCLK_SOURCE).as_string();
+    }
+    IdString pin;
+    if (source == "DQSW") {
+        pin = id_TCLK_DQSW0;
+    } else if (source == "DQSW270") {
+        pin = id_TCLK_DQSW270;
+    } else {
+        log_error("%s: TCLK_SOURCE \"%s\" is neither \"DQSW\" nor \"DQSW270\".\n", ctx->nameOf(&ci),
+                  source.c_str());
+    }
+    if (ci.ports.count(id_TCLK)) {
+        ci.renamePort(id_TCLK, pin);
+    }
+}
+
 void GowinPacker::pack_bi_output_iol(CellInfo &ci, std::vector<IdString> &nets_to_remove)
 {
     // These primitives have an additional pin to control the tri-state iob - Q1.
@@ -137,8 +162,14 @@ void GowinPacker::pack_bi_output_iol(CellInfo &ci, std::vector<IdString> &nets_t
     case ID_OSER8:
         out_mode = "ODDRX4";
         break;
+    case ID_OSER8_MEM:
+        out_mode = "MODDRX4";
+        break;
     }
     ci.setParam(ctx->id("OUTMODE"), out_mode);
+    if (ci.type == id_OSER8_MEM) {
+        connect_mem_tclk(ci);
+    }
 
     // disconnect Q output: it is wired internally
     nets_to_remove.push_back(ci.getPort(out_port)->name);
@@ -159,7 +190,8 @@ void GowinPacker::pack_bi_output_iol(CellInfo &ci, std::vector<IdString> &nets_t
         ci.disconnectPort(tx_port);
     } else { // disconnect TXx ports, ignore these nets
         switch (ci.type.hash()) {
-        case ID_OSER8:
+        case ID_OSER8:     /* fall-through */
+        case ID_OSER8_MEM:
             ci.disconnectPort(id_TX3);
             ci.disconnectPort(id_TX2); /* fall-through */
         case ID_OSER4:
@@ -291,7 +323,8 @@ int GowinPacker::ides_out_base(IdString type, bool wide_iologic) const
         return wide_iologic ? 14 : 8;
     case ID_IDES4:
         return wide_iologic ? 8 : 6;
-    case ID_IDES8:
+    case ID_IDES8:     /* fall-through */
+    case ID_IDES8_MEM: // MEASURED: Q<i> on IOLOGIC Q<8+i> (TinyVCMI TOOL-009)
         return wide_iologic ? 8 : 2;
     case ID_IDES10:
         return wide_iologic ? 6 : -1;
@@ -316,7 +349,8 @@ void GowinPacker::reconnect_ides_outs(CellInfo *ci)
     case ID_IVIDEO:
         width = 7;
         break;
-    case ID_IDES8:
+    case ID_IDES8:     /* fall-through */
+    case ID_IDES8_MEM:
         width = 8;
         break;
     case ID_IDES10:
@@ -375,6 +409,9 @@ void GowinPacker::pack_ides_iol(CellInfo &ci, std::vector<IdString> &nets_to_rem
         break;
     case ID_IDES8:
         in_mode = "IDDRX4";
+        break;
+    case ID_IDES8_MEM:
+        in_mode = "MIDDRX4";
         break;
     case ID_IDES10:
         in_mode = "IDDRX5";
@@ -738,6 +775,17 @@ void GowinPacker::pack_iologic(void)
         if (ci.type.in(id_ODDR, id_ODDRC, id_OSER4, id_OSER8)) {
             pack_bi_output_iol(ci, nets_to_remove);
             create_aux_iologic_cell(ci, ctx->id("OUTMODE"));
+            continue;
+        }
+        // The memory-mode serializers take no aux cell: the vendor puts an
+        // independent serializer on each side of a lane cell and leaves the
+        // other side's configuration clear (TinyVCMI TOOL-009).
+        if (ci.type == id_OSER8_MEM) {
+            pack_bi_output_iol(ci, nets_to_remove);
+            continue;
+        }
+        if (ci.type == id_IDES8_MEM) {
+            pack_ides_iol(ci, nets_to_remove);
             continue;
         }
         if (ci.type.in(id_OVIDEO, id_OSER10, id_IOLOGICO_EMPTY)) {

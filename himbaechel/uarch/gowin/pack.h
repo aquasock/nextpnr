@@ -90,6 +90,7 @@ struct GowinPacker
     BelId get_iologico_bel(CellInfo *iob);
     BelId get_iologici_bel(CellInfo *iob);
     void check_iologic_placement(CellInfo &ci, Loc iob_loc, int diff);
+    void connect_mem_tclk(CellInfo &ci);
     void pack_bi_output_iol(CellInfo &ci, std::vector<IdString> &nets_to_remove);
     void pack_single_output_iol(CellInfo &ci, std::vector<IdString> &nets_to_remove);
     BelId get_aux_iologic_bel(const CellInfo &ci);

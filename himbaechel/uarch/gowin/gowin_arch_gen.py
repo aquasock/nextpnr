@@ -1385,6 +1385,35 @@ DQS_DLLSTEP_SOURCE = [(1, 108, f"Q{i}") for i in range(8)]   # DDRDLL_BL STEP
 #: carries no bel pin of its own.
 DDRDLL_LOCK_TAP = (1, 99, "Q7")
 
+#: The lane-0 IOLOGIC positions of the hardware-proven controller's pin map
+#: (Tang-PSX `tang_psx_ddr3.cst`): the strobe Y3 and dq[7:0]/dm[0], in
+#: nextpnr `(x, y, side)`.  TinyVCMI TOOL-009: Gowin EDA 1.9.11.03 refuses
+#: `ICLK`, `WADDR`, `RADDR` and `TCLK` from anything but the lane DQS
+#: (`CK2060`), so those pins are hard-wired and get no pip.
+DQ_LANE0_IOLOGIC = [(0, 68, "A"),
+                    (0, 70, "A"), (0, 70, "B"), (0, 73, "A"), (0, 73, "B"),
+                    (0, 75, "A"), (0, 75, "B"), (0, 77, "A"), (0, 77, "B"),
+                    (0, 79, "A")]
+DQ_LANE0_TILES = sorted({(x, y) for x, y, _ in DQ_LANE0_IOLOGIC})
+
+#: DQS output -> the memory-mode IOLOGIC pins it alone may drive.  `TCLK`
+#: has a bel pin per source, so `TCLK_SOURCE` picks the pin in the packer and
+#: no pip is needed to choose between `DQSW0` and `DQSW270`.
+DQ_LANE0_LINKS = {
+    "DQSW0": [("O", "TCLK_DQSW0")],
+    "DQSW270": [("O", "TCLK_DQSW270")],
+    "DQSR90": [("I", "ICLK")],
+    "WPOINT[0]": [("I", "WADDR[0]")], "WPOINT[1]": [("I", "WADDR[1]")],
+    "WPOINT[2]": [("I", "WADDR[2]")],
+    "RPOINT[0]": [("I", "RADDR[0]")], "RPOINT[1]": [("I", "RADDR[1]")],
+    "RPOINT[2]": [("I", "RADDR[2]")],
+}
+
+
+def dq_link_wire(side: str, pin: str) -> str:
+    """The pin-only wire a memory-mode IOLOGIC pin sits on."""
+    return f"DQ_{side}_{pin.replace('[', '').replace(']', '')}"
+
 
 def mark_dqs_site(db: chipdb):
     """Give the measured `DQS` cell an extra-function entry of its own.
@@ -1397,6 +1426,10 @@ def mark_dqs_site(db: chipdb):
     """
     x, y = DQS_SITE
     db.extra_func.setdefault((y, x), {})['tinyvcmi_dqs'] = {'site': 'Y3'}
+    # The lane-0 IO cells are of a type that occurs 42 times; the
+    # memory-mode pins belong to these six only.
+    for x, y in DQ_LANE0_TILES:
+        db.extra_func.setdefault((y, x), {})['tinyvcmi_dq_lane0'] = {}
 
 
 def extend_dqs_fclk_lanes(db: chipdb):
@@ -1454,6 +1487,12 @@ def create_dedicated_links(chip: Chip, db: chipdb):
     links += [[NodeWire(*src), NodeWire(x, y, f"DQS_DLLSTEP{i}")]
               for i, src in enumerate(DQS_DLLSTEP_SOURCE)]
     links.append([NodeWire(*DDRDLL_LOCK_TAP), NodeWire(1, db.rows - 1, "DDRDLL_LOCK")])
+
+    for out, sinks in DQ_LANE0_LINKS.items():
+        link = [NodeWire(x, y, DQS_OUTPUTS[out])]
+        for ix, iy, side in DQ_LANE0_IOLOGIC:
+            link += [NodeWire(ix, iy, dq_link_wire(side, pin)) for _, pin in sinks]
+        links.append(link)
 
     in_db_nodes = {(x_, y_, w) for _, members in db.nodes.values() for y_, x_, w in members}
     for link in links:
@@ -1600,6 +1639,14 @@ def create_io_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc:
                     tt.add_bel_pin(iol, port, wire, PinType.OUTPUT)
                 else:
                     tt.add_bel_pin(iol, port, wire, PinType.INPUT)
+            if 'tinyvcmi_dq_lane0' in db.extra_func.get((y, x), {}):
+                # memory-mode pins, each on a wire of its own that only
+                # `create_dedicated_links` reaches
+                for links in DQ_LANE0_LINKS.values():
+                    for kind, pin in links:
+                        if kind == io_type:
+                            create_internal_net(tt, dq_link_wire(name[-1], pin),
+                                                [(iol, pin, PinType.INPUT)])
     tdesc.tiletype = tiletype
     return tt
 

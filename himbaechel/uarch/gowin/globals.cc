@@ -208,9 +208,35 @@ struct GowinGlobalRouter
     }
 
     // Dedicated backwards BFS routing for global networks
+    // A DDR3 lane's fast clock reaches its CLKDIV and every FCLK sink -- the
+    // DQS's and the serializers' -- and the vendor carries all of them on one
+    // HCLK lane, so the divided PCLK and the FCLK stay in phase (TinyVCMI
+    // docs/ddr3-open-flow.md, "One clock, one HCLK lane").  Routing each sink
+    // from the source independently instead took the first equal-length lane
+    // for the FCLK sinks while a pinned CLKDIV held another.  Only nets that
+    // feed a DQS FCLK are treated this way, so no other design's clock
+    // routing changes.
+    bool net_feeds_dqs_fclk(const NetInfo *net) const
+    {
+        for (auto &usr : net->users) {
+            if (usr.cell != nullptr && usr.cell->type == id_DQS && usr.port == id_FCLK) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The point where one HCLK lane both feeds its CLKDIV and leaves the block:
+    // a later sink that reaches it already owned by the net joins that lane.
+    bool is_hclk_lane_join(WireId wire) const
+    {
+        const std::string name = ctx->getWireName(wire)[1].str(ctx);
+        return name.rfind("HCLK_MUX_ALPHA", 0) == 0;
+    }
+
     template <typename Tfilt>
     bool backwards_bfs_route(NetInfo *net, WireId src, WireId dst, int iter_limit, bool strict, Tfilt pip_filter,
-                             std::vector<PipId> *path = nullptr)
+                             std::vector<PipId> *path = nullptr, bool join_hclk_lane = false)
     {
         // Queue of wires to visit
         std::queue<WireId> visit;
@@ -224,6 +250,8 @@ struct GowinGlobalRouter
 
         visit.push(dst);
         backtrace[dst] = PipId();
+        // where the search ends: the source, or a lane wire this net owns
+        WireId target = src;
 
         int iter = 0;
 
@@ -257,6 +285,10 @@ struct GowinGlobalRouter
                 if (prev == src) {
                     goto done;
                 }
+                if (join_hclk_lane && ctx->getBoundWireNet(prev) == net && is_hclk_lane_join(prev)) {
+                    target = prev;
+                    goto done;
+                }
             }
             if (false) {
             done:
@@ -264,8 +296,8 @@ struct GowinGlobalRouter
             }
         }
 
-        if (backtrace.count(src)) {
-            WireId cursor = src;
+        if (backtrace.count(target)) {
+            WireId cursor = target;
             std::vector<PipId> pips;
             // Create a list of pips on the routed path
             while (true) {
@@ -331,7 +363,18 @@ struct GowinGlobalRouter
         // and the failure was lost (MEASURED on a DHCE-gated HCLK reaching a
         // CLKDIV and an IOLOGIC FCLK, where the two orders disagreed).
         int reached = 0, missed = 0;
-        for (auto usr : net->users) {
+        bool join_hclk_lane = net_feeds_dqs_fclk(net);
+        std::vector<PortRef> users;
+        for (auto &usr : net->users) {
+            users.push_back(usr);
+        }
+        if (join_hclk_lane) {
+            // the CLKDIVs first: their lane is fixed by placement
+            std::stable_partition(users.begin(), users.end(), [](const PortRef &usr) {
+                return usr.cell != nullptr && usr.cell->type.in(id_CLKDIV, id_CLKDIV2) && usr.port == id_HCLKIN;
+            });
+        }
+        for (auto usr : users) {
             WireId dst = ctx->getNetinfoSinkWire(net, usr, 0);
             if (dst == WireId()) {
                 log_error("Net '%s' has an invalid sink port %s.%s\n", ctx->nameOf(net), ctx->nameOf(usr.cell),
@@ -340,7 +383,8 @@ struct GowinGlobalRouter
             bool bfs_res;
             bfs_res = backwards_bfs_route(
                     net, src, dst, 1000000, false,
-                    [&](PipId pip, WireId src_wire) { return (is_relaxed_sink(usr) || pip_filter(pip, src)); }, path);
+                    [&](PipId pip, WireId src_wire) { return (is_relaxed_sink(usr) || pip_filter(pip, src)); }, path,
+                    join_hclk_lane);
             if (bfs_res) {
                 ++reached;
             } else {
@@ -348,6 +392,28 @@ struct GowinGlobalRouter
                 if (unrouted != nullptr) {
                     unrouted->push_back(usr);
                 }
+            }
+        }
+        if (join_hclk_lane) {
+            // A sink that cannot reach the lane its CLKDIV holds -- an IOLOGIC
+            // FCLK, which this database offers lanes 0 and 2 only -- takes
+            // another, and the divided clock then leaves the block on a
+            // different lane from the fast one.  Say so rather than ship it.
+            pool<IdString> lanes;
+            for (auto &wire : net->wires) {
+                if (is_hclk_lane_join(wire.first)) {
+                    lanes.insert(ctx->getWireName(wire.first)[1]);
+                }
+            }
+            if (lanes.size() > 1) {
+                std::string names;
+                for (auto lane : lanes) {
+                    names += (names.empty() ? "" : ", ") + lane.str(ctx);
+                }
+                log_warning("Net '%s' feeds a DQS FCLK but is carried on %d HCLK lanes (%s); the vendor keeps a "
+                            "DDR3 lane's CLKDIV and FCLK sinks on one lane, and an IOLOGIC FCLK reaches lanes 0 "
+                            "and 2 only.\n",
+                            ctx->nameOf(net), int(lanes.size()), names.c_str());
             }
         }
         RouteResult routed = reached == 0 ? NOT_ROUTED : (missed == 0 ? ROUTED_ALL : ROUTED_PARTIALLY);

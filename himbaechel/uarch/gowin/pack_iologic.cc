@@ -65,6 +65,12 @@ void GowinPacker::check_iologic_placement(CellInfo &ci, Loc iob_loc, int diff /*
     if (ci.type.in(id_ODDR, id_ODDRC, id_IDDR, id_IDDRC, id_OSER4, id_IOLOGICI_EMPTY, id_IOLOGICO_EMPTY) || diff) {
         return;
     }
+    // The DDR3 lane serializers occupy only their own side: the vendor
+    // configures each side's alone (TinyVCMI TOOL-009), and the proven
+    // controller puts dq[0] and dm[0] on the two sides of one cell.
+    if (ci.type.in(id_OSER8_MEM, id_IDES8_MEM)) {
+        return;
+    }
     BelId l_bel = ctx->getBelByLocation(Loc(iob_loc.x, iob_loc.y, BelZ::IOBA_Z + 1 - (iob_loc.z - BelZ::IOBA_Z)));
     if (!ctx->checkBelAvail(l_bel)) {
         log_error("Can't place %s at %s because it's already taken by %s\n", ctx->nameOf(&ci), ctx->nameOfBel(l_bel),

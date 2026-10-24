@@ -60,6 +60,18 @@ BelId GowinPacker::get_iologici_bel(CellInfo *iob)
     return BelId();
 }
 
+// MEASURED on the GW5AST-138C against Gowin EDA 1.9.11.03 (TinyVCMI
+// tools/cmd_pad_probe.py, cmd_m1_sstl, cmd_l1_sstl and cmd_pair_sstl on cell
+// IOL35): a plain OSER8 configures its own IOLOGIC side only -- the other
+// side carries no fuse -- and one on each side of a cell is exactly the union
+// of the two, which the proven DDR3 controller's address balls (M1/L1,
+// J5/H5, ...) need.  So on this device it neither claims the other IOB nor
+// takes an aux cell, whose DDRENABLE wrote nothing there anyway.
+static bool oser8_one_side(const Context *ctx, const CellInfo &ci)
+{
+    return ci.type == id_OSER8 && ctx->getChipName() == "GW5AST-138C";
+}
+
 void GowinPacker::check_iologic_placement(CellInfo &ci, Loc iob_loc, int diff /* 1 - diff */)
 {
     if (ci.type.in(id_ODDR, id_ODDRC, id_IDDR, id_IDDRC, id_OSER4, id_IOLOGICI_EMPTY, id_IOLOGICO_EMPTY) || diff) {
@@ -68,7 +80,7 @@ void GowinPacker::check_iologic_placement(CellInfo &ci, Loc iob_loc, int diff /*
     // The DDR3 lane serializers occupy only their own side: the vendor
     // configures each side's alone (TinyVCMI TOOL-009), and the proven
     // controller puts dq[0] and dm[0] on the two sides of one cell.
-    if (ci.type.in(id_OSER8_MEM, id_IDES8_MEM)) {
+    if (ci.type.in(id_OSER8_MEM, id_IDES8_MEM) || oser8_one_side(ctx, ci)) {
         return;
     }
     BelId l_bel = ctx->getBelByLocation(Loc(iob_loc.x, iob_loc.y, BelZ::IOBA_Z + 1 - (iob_loc.z - BelZ::IOBA_Z)));
@@ -338,7 +350,8 @@ bool GowinPacker::is_mipi_io(BelId bel)
 
 CellInfo *GowinPacker::create_aux_iologic_cell(CellInfo &ci, IdString mode, bool io16, int idx)
 {
-    if (ci.type.in(id_ODDR, id_ODDRC, id_OSER4, id_IDDR, id_IDDRC, id_IDES4, id_IOLOGICI_EMPTY, id_IOLOGICO_EMPTY)) {
+    if (ci.type.in(id_ODDR, id_ODDRC, id_OSER4, id_IDDR, id_IDDRC, id_IDES4, id_IOLOGICI_EMPTY, id_IOLOGICO_EMPTY) ||
+        oser8_one_side(ctx, ci)) {
         return nullptr;
     }
     IdString aux_name = gwu.create_aux_name(ci.name, idx);

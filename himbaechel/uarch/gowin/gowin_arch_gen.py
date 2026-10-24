@@ -89,6 +89,10 @@ DLLDLY_Z    = 303 # : 305 reserve for 2 DLLDLYs
 # packer writes its configuration fuses in the corner cell next to it.
 DDRDLL_Z    = 306
 
+# The GW5AST-138C DDR3 byte-lane strobe block.  One site is modelled, the one
+# beside board pin Y3; see DQS_SITE.
+DQS_Z       = 307
+
 PINCFG_Z    = 400
 ADC_Z       = 401
 
@@ -1298,10 +1302,12 @@ def create_ddrdll_bel(tt: TileType, db: chipdb, x: int, y: int):
       `(109,2)`;
     * every configuration fuse sits in the corner cell one column to its
       left, tile type 48, whose `DLL0` table the packer drives;
-    * `LOCK` does not reach a configurable wire at all: with `.LOCK()` open,
-      the only bits that change are the row-99 track at column 1 and the sink
-      IO.  There is therefore no honest bel pin for it yet, and a design that
-      uses `LOCK` must fail in placement rather than route a dead net.
+    * `LOCK` does not reach a configurable wire in the port tile: with
+      `.LOCK()` open, the only bits that change are the row-99 track at
+      column 1 and the sink IO, the vendor's `E820 <- Q7` at the one-based
+      cell `(100,2)`.  The pin therefore sits on a wire of its own here,
+      `DDRDLL_LOCK`, which `create_dedicated_links` joins to `Q7` of
+      `DDRDLL_LOCK_TAP`; the router takes it from there on ordinary pips.
 
     The four parameters are the packer's business, not the router's, so they
     are not bel pins.  Only this one site is modelled: the other three
@@ -1323,10 +1329,142 @@ def create_ddrdll_bel(tt: TileType, db: chipdb, x: int, y: int):
     for pin, wire, direction in pins:
         create_reuse_wire(tt, wire)
         tt.add_bel_pin(bel, pin, wire, direction)
+    create_internal_net(tt, "DDRDLL_LOCK", [(bel, "LOCK", PinType.OUTPUT)])
     # `INS_LOC "<cell>" DDRDLLM_BL;` names no index; `DDRDLLM_BL[0]` is
     # accepted as the same site so both vendor spellings resolve.
     for handle in ("DDRDLLM_BL[]", "DDRDLLM_BL[0]"):
         macro_bels[handle] = (x, y, DDRDLL_Z)
+
+#: The one measured GW5AST-138C `DQS` site, in nextpnr `(x, y)`: the strobe
+#: block beside board pin Y3, whose byte group's configuration lives in
+#: longfuses table 58 of cell (72,0).  MEASURED 2026-10-23 with Gowin EDA
+#: 1.9.11.03 matched pairs (TinyVCMI TOOL-007, TOOL-008,
+#: `tools/dqs_map_check.py` and `tools/dqs_param_probe.py --check`).  Its
+#: tile type appears eight times on the die, so `mark_dqs_site` gives this
+#: one cell an extra-function entry of its own before any tile type is built,
+#: and the `create_tiletype` dedup can no longer copy the bel elsewhere.
+DQS_SITE = (5, 81)
+
+#: Control inputs: every one changed exactly one destination of the site tile
+#: in its pair, and that destination is the pin's wire.
+DQS_INPUTS = {
+    "RDIR": "A0", "RLOADN": "A1", "RMOVE": "A2",
+    "READ[0]": "A3", "READ[1]": "A4", "READ[2]": "A5", "READ[3]": "A7",
+    "WDIR": "B0", "WLOADN": "B1", "WMOVE": "B2", "HOLD": "B3",
+    "RCLKSEL[0]": "C0", "RCLKSEL[1]": "C1", "RCLKSEL[2]": "C2",
+    "WSTEP[0]": "D3", "WSTEP[1]": "D4", "WSTEP[2]": "D5", "WSTEP[3]": "D7",
+    "WSTEP[4]": "CLK2", "WSTEP[5]": "LSR2", "WSTEP[6]": "CE1", "WSTEP[7]": "CE2",
+    "PCLK": "CLK0", "RESET": "LSR0",
+}
+
+#: Status outputs.  Ten were selected at their first hop; DQSR90, DQSW270 and
+#: RVALID leave through a mux in its all-zero state, which is the selection
+#: of Q0, Q1 and Q5, so those three are route inferences (TOOL-007).
+DQS_OUTPUTS = {
+    "DQSR90": "Q0", "DQSW270": "Q1", "RPOINT[1]": "Q2", "WPOINT[1]": "Q3",
+    "RVALID": "Q5", "RFLAG": "Q6", "WFLAG": "Q7",
+    "DQSW0": "F1", "RPOINT[0]": "F2", "WPOINT[0]": "F3", "RPOINT[2]": "F4",
+    "WPOINT[2]": "F5", "RBURST": "F6",
+}
+
+#: `FCLK` has no fabric pin: it is a sink of HCLK block 2, whose four lanes
+#: the Apicula database already carries from `HCLK_MUX_ALPHA2<n>` to the
+#: lane wires `HCLK2<n>`.  The packer turns the lane the router picks into
+#: the table-58 lane field; all four lanes are measured.
+DQS_FCLK_LANES = ("HCLK20", "HCLK21", "HCLK22", "HCLK23")
+
+#: Hard-wired inputs.  Neither has a configurable bit, and the vendor tool
+#: refuses any other source (`PR0014`/`CK3001` for DQSIN, `PR0015` for
+#: DLLSTEP), so each becomes one node joining the source's own wire to a
+#: pin-only wire in the site tile -- no pip, nothing for the packer, and
+#: nothing the router can put another net on.
+DQS_DQSIN_SOURCE = (0, 68, "F6")                      # IOBA.O of IOL69A, pin Y3
+DQS_DLLSTEP_SOURCE = [(1, 108, f"Q{i}") for i in range(8)]   # DDRDLL_BL STEP
+
+#: Where the DDRDLL's LOCK reaches the fabric: `Q7` of cell (99,1), which
+#: carries no bel pin of its own.
+DDRDLL_LOCK_TAP = (1, 99, "Q7")
+
+
+def mark_dqs_site(db: chipdb):
+    """Give the measured `DQS` cell an extra-function entry of its own.
+
+    `create_tiletype` shares one tile type between every cell with the same
+    chipdb type and the same extra functions; without this the bel would land
+    in all eight cells of type 241, seven of which nobody has measured.
+    `create_extra_funcs` ignores keys it does not know, so the entry only
+    separates the type.
+    """
+    x, y = DQS_SITE
+    db.extra_func.setdefault((y, x), {})['tinyvcmi_dqs'] = {'site': 'Y3'}
+
+
+def extend_dqs_fclk_lanes(db: chipdb):
+    """Add the `DQS` site's end of each block-2 HCLK lane node.
+
+    Nodes are `(row, col, wire)` sets in the Apicula database, built into
+    Himbaechel nodes by `create_global_nodes`; the wire is created there.
+    """
+    x, y = DQS_SITE
+    for lane in DQS_FCLK_LANES:
+        node = db.nodes.get(f"HCLK2_{lane}")
+        if node is None:
+            raise ValueError(f"HCLK lane node HCLK2_{lane} is missing from the database")
+        node[1].add((y, x, lane))
+
+
+def create_dqs_bel(tt: TileType, db: chipdb, x: int, y: int):
+    """Create the one measured `DQS` bel; see `DQS_SITE`."""
+    if (x, y) != DQS_SITE:
+        return
+    bel = tt.create_bel("DQS", "DQS", z = DQS_Z)
+    for pin, wire in DQS_INPUTS.items():
+        create_reuse_wire(tt, wire)
+        tt.add_bel_pin(bel, pin, wire, PinType.INPUT)
+    for pin, wire in DQS_OUTPUTS.items():
+        create_reuse_wire(tt, wire)
+        tt.add_bel_pin(bel, pin, wire, PinType.OUTPUT)
+    # not an internal net: the four lane pips are the only way in
+    tt.create_wire("DQS_FCLK", "HCLK")
+    tt.add_bel_pin(bel, "FCLK", "DQS_FCLK", PinType.INPUT)
+    for lane in DQS_FCLK_LANES:
+        create_reuse_wire(tt, lane, "GLOBAL_CLK")
+        tt.create_pip(lane, "DQS_FCLK", get_tm_class(db, "X01")) # XXX as HCLK
+    create_internal_net(tt, "DQS_DQSIN", [(bel, "DQSIN", PinType.INPUT)])
+    for i in range(8):
+        create_internal_net(tt, f"DQS_DLLSTEP{i}", [(bel, f"DLLSTEP[{i}]", PinType.INPUT)])
+
+
+#: Wire names `create_nodes` joins between tiles by name; a dedicated link must
+#: not reuse one, because a tile wire can belong to only one node.
+_INTER_TILE_WIRE = re.compile(r"(SN|EW)\d0|[NSEW](1[03]|2[0-7]|8[0-3])[0-8]|OF30?|C(IN|OUT)\d")
+
+
+def create_dedicated_links(chip: Chip, db: chipdb):
+    """Join each hard-wired source to its sink pin in one fuse-free node.
+
+    The source end is an ordinary wire that keeps its pips, so the source's
+    net can still go elsewhere too, as the vendor's STEP and pad nets do; the
+    sink end is a pin-only wire with no pip.  A tile wire can belong to one
+    node only, so a source that is already part of a node is refused rather
+    than joined twice.
+    """
+    x, y = DQS_SITE
+    links = [[NodeWire(*DQS_DQSIN_SOURCE), NodeWire(x, y, "DQS_DQSIN")]]
+    links += [[NodeWire(*src), NodeWire(x, y, f"DQS_DLLSTEP{i}")]
+              for i, src in enumerate(DQS_DLLSTEP_SOURCE)]
+    links.append([NodeWire(*DDRDLL_LOCK_TAP), NodeWire(1, db.rows - 1, "DDRDLL_LOCK")])
+
+    in_db_nodes = {(x_, y_, w) for _, members in db.nodes.values() for y_, x_, w in members}
+    for link in links:
+        for w in link:
+            if (w.x, w.y, w.wire) in in_db_nodes or _INTER_TILE_WIRE.fullmatch(w.wire):
+                raise ValueError(f"dedicated link wire X{w.x}Y{w.y}/{w.wire} already "
+                                 "belongs to a node")
+            if not chip.tile_type_at(w.x, w.y).has_wire(w.wire):
+                raise ValueError(f"dedicated link wire X{w.x}Y{w.y}/{w.wire} does not exist")
+        chip.add_node(link)
+
 
 def create_tiletype(create_func, chip: Chip, db: chipdb, x: int, y: int, ttyp: int):
     has_extra_func = (y, x) in db.extra_func
@@ -1378,6 +1516,7 @@ def create_tiletype(create_func, chip: Chip, db: chipdb, x: int, y: int, ttyp: i
     create_hclk_switch_matrix(tt, db, x, y)
     create_switch_matrix(tt, db, x, y)
     create_ddrdll_bel(tt, db, x, y)
+    create_dqs_bel(tt, db, x, y)
     set_wire_flags(tt, tdesc)
     chip.set_tile_type(x, y, tdesc.tiletype)
 
@@ -2440,6 +2579,11 @@ def main():
     # sources, place them at X0Y0.
     check_place_VCC_GND(db)
 
+    # The measured DQS site needs a tile type of its own and the far end of
+    # its four FCLK lanes, both before any tile type or node is built.
+    mark_dqs_site(db)
+    extend_dqs_fclk_lanes(db)
+
     # Setup tile grid
     for x in range(X):
         for y in range(Y):
@@ -2466,6 +2610,7 @@ def main():
         create_nodes_with_empty_area(ch, db)
     else:
         create_nodes(ch, db)
+    create_dedicated_links(ch, db)
 
     create_extra_data(ch, db, chip_flags)
     create_timing_info(ch, db)

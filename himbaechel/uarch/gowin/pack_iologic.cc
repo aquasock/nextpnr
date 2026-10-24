@@ -117,6 +117,63 @@ void GowinPacker::connect_mem_tclk(CellInfo &ci)
     }
 }
 
+// A `DQS` has one site per DDR3 byte lane, and its `DQSIN` is hard-wired from
+// that lane's strobe pad (TinyVCMI TOOL-007, TOOL-011): the chip database joins
+// the pad's `IOBA.O` wire and the site's `DQSIN` pin in one fuse-free node.  The
+// placer knows nothing of that, so each DQS is locked here to the one site
+// whose `DQSIN` shares a node with the pin of the placed IOB that drives it.
+// Gowin refuses any other `DQSIN` source (`PR0014`, `CK3001`), and so does
+// this.  A DQS with `DQSIN` unconnected is left to the placer.
+void GowinPacker::pack_dqs(void)
+{
+    std::vector<BelId> sites;
+    for (BelId bel : ctx->getBels()) {
+        if (ctx->getBelType(bel) == id_DQS) {
+            sites.push_back(bel);
+        }
+    }
+    for (auto &cell : ctx->cells) {
+        CellInfo &ci = *cell.second;
+        if (ci.type != id_DQS) {
+            continue;
+        }
+        const NetInfo *net = ci.getPort(id_DQSIN);
+        if (net == nullptr) {
+            continue;
+        }
+        const PortRef &drv = net->driver;
+        if (drv.cell == nullptr || !is_iob(ctx, drv.cell)) {
+            log_error("DQS %s: DQSIN must come straight from a strobe pad buffer, not from %s.\n",
+                      ctx->nameOf(&ci), drv.cell == nullptr ? "nothing" : ctx->nameOf(drv.cell));
+        }
+        if (drv.cell->bel == BelId()) {
+            log_error("DQS %s: the strobe pad %s that drives DQSIN has no location; constrain it.\n",
+                      ctx->nameOf(&ci), ctx->nameOf(drv.cell));
+        }
+        WireId pad_wire = ctx->getBelPinWire(drv.cell->bel, drv.port);
+        BelId site;
+        for (BelId bel : sites) {
+            if (pad_wire != WireId() && ctx->getBelPinWire(bel, id_DQSIN) == pad_wire) {
+                site = bel;
+                break;
+            }
+        }
+        if (site == BelId()) {
+            log_error("DQS %s: its strobe pad %s at %s is not the strobe pad of any measured DDR3 lane.\n",
+                      ctx->nameOf(&ci), ctx->nameOf(drv.cell), ctx->nameOfBel(drv.cell->bel));
+        }
+        if (!ctx->checkBelAvail(site)) {
+            log_error("DQS %s: the lane site %s is already taken by %s.\n", ctx->nameOf(&ci),
+                      ctx->nameOfBel(site), ctx->nameOf(ctx->getBoundBelCell(site)));
+        }
+        if (ctx->verbose) {
+            log_info("DQS %s locked to %s by its strobe pad %s.\n", ctx->nameOf(&ci), ctx->nameOfBel(site),
+                     ctx->nameOf(drv.cell));
+        }
+        ctx->bindBel(site, &ci, PlaceStrength::STRENGTH_LOCKED);
+    }
+}
+
 void GowinPacker::pack_bi_output_iol(CellInfo &ci, std::vector<IdString> &nets_to_remove)
 {
     // These primitives have an additional pin to control the tri-state iob - Q1.

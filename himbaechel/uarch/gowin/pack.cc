@@ -700,6 +700,9 @@ void GowinPacker::run(void)
     pack_iologic();
     ctx->check();
 
+    pack_dqs();
+    ctx->check();
+
     pack_io16();
     ctx->check();
 

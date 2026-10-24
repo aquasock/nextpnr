@@ -31,6 +31,12 @@ the model are easy to break without any build failing:
       Each of the four block-2 lanes is driven from its `HCLK_MUX_ALPHA2<n>`
       and, after `extend_dqs_fclk_lanes`, has every site in its node.
 
+  test_the_ddrdll_port_tile_joins_every_lane
+      After `extend_dqs_fclk_lanes`, the bottom-left DDRDLL's port tile is in
+      every block-2 lane node, so `DDRDLL_CLKIN` can take the lane a CLKDIV
+      at LEFTSIDE[4+n] drives; no bel already sits on the new wire or on
+      the lane wires there.
+
   test_a_link_onto_a_node_wire_is_refused
       `create_dedicated_links` refuses a wire that already belongs to a node,
       because a tile wire can belong to one node only.
@@ -147,6 +153,20 @@ def test_every_fclk_lane_reaches_every_site():
         members = {tuple(m) for m in db.nodes[f"HCLK2_{lane}"][1]}
         for x, y in gen.DQS_SITES:
             assert (y, x, lane) in members, f"{lane} does not reach the DQS site X{x}Y{y}"
+
+
+def test_the_ddrdll_port_tile_joins_every_lane():
+    db = copy.copy(_db())
+    db.nodes = copy.deepcopy(db.nodes)
+    gen.extend_dqs_fclk_lanes(db)
+    x, y = 1, db.rows - 1
+    for lane in gen.DDRDLL_CLKIN_LANES:
+        members = {tuple(m) for m in db.nodes[f"HCLK2_{lane}"][1]}
+        assert (y, x, lane) in members, f"{lane} does not reach the DDRDLL port tile X{x}Y{y}"
+        assert not _bel_pins_on(db, x, y, lane), f"X{x}Y{y}/{lane} already carries a bel pin"
+    assert not _bel_pins_on(db, x, y, "DDRDLL_CLKIN"), "DDRDLL_CLKIN already carries a bel pin"
+    assert set(gen.DDRDLL_CLKIN_LANES) == set(gen.DQS_FCLK_LANES), \
+        "the DLL and the DQS sites must take the same four lanes"
 
 
 def test_dq_lane_cells_take_fclk_from_every_lane():

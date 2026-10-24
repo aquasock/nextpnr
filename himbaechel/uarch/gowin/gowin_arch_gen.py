@@ -1289,6 +1289,16 @@ def set_wire_flags(tt: TileType, tdesc: TypeDesc):
                 if wire_data.name == wname_id:
                     wire_data.flags |= WIRE_FLAG_CLOCK_GATE
 
+#: The DDRDLL's clock sources besides `CLK0`: the four lanes of HCLK block 2.
+#: MEASURED 2026-10-24 with Gowin EDA 1.9.11.03 (TinyVCMI
+#: `tools/ddrdll_port_probe.py`): when the DLL's clock also drives a `CLKDIV`
+#: at `LEFTSIDE[4+n]`, the vendor drops the `GB10 -> CLK0` pip at the port
+#: tile and sets `DLL0` features 21 and `4-n` in place of feature 5, at any
+#: frequency and from a pin or a PLL; without a `CLKDIV` it keeps `CLK0`.  The
+#: hardware-proven DDR3 controller's DLL is clocked from lane 0 this way.
+DDRDLL_CLKIN_LANES = ("HCLK20", "HCLK21", "HCLK22", "HCLK23")
+
+
 def create_ddrdll_bel(tt: TileType, db: chipdb, x: int, y: int):
     """Create the bottom-left `DDRDLL` master's bel, and only that one.
 
@@ -1319,8 +1329,16 @@ def create_ddrdll_bel(tt: TileType, db: chipdb, x: int, y: int):
     if x != 1 or y != db.rows - 1:
         return
     bel = tt.create_bel("DDRDLL_BL", "DDRDLL", z = DDRDLL_Z)
+    # `CLKIN` has two sources, and the packer writes which one the router
+    # took: the port tile's `CLK0`, and HCLK block 2's lanes (`DDRDLL_CLKIN`).
+    tt.create_wire("DDRDLL_CLKIN", "HCLK")
+    tt.add_bel_pin(bel, "CLKIN", "DDRDLL_CLKIN", PinType.INPUT)
+    create_reuse_wire(tt, "CLK0")
+    tt.create_pip("CLK0", "DDRDLL_CLKIN", get_tm_class(db, "X01"))
+    for lane in DDRDLL_CLKIN_LANES:
+        create_reuse_wire(tt, lane, "GLOBAL_CLK")
+        tt.create_pip(lane, "DDRDLL_CLKIN", get_tm_class(db, "X01")) # XXX as HCLK
     pins = [
-        ("CLKIN",    "CLK0", PinType.INPUT),
         ("STOP",     "A6",   PinType.INPUT),
         ("RESET",    "LSR0", PinType.INPUT),
         ("UPDNCNTL", "A5",   PinType.INPUT),
@@ -1464,7 +1482,8 @@ def mark_dqs_site(db: chipdb):
 
 
 def extend_dqs_fclk_lanes(db: chipdb):
-    """Add each `DQS` site's end of each block-2 HCLK lane node.
+    """Add each `DQS` site's end of each block-2 HCLK lane node, and the
+    `DDRDLL` port tile's.
 
     All four lanes' `FCLK` ride HCLK block 2 (TinyVCMI TOOL-012).  Nodes are
     `(row, col, wire)` sets in the Apicula database, built into Himbaechel
@@ -1476,6 +1495,9 @@ def extend_dqs_fclk_lanes(db: chipdb):
             raise ValueError(f"HCLK lane node HCLK2_{lane} is missing from the database")
         for x, y in DQS_SITES:
             node[1].add((y, x, lane))
+    # and the bottom-left DDRDLL's port tile, `DDRDLL_CLKIN_LANES`
+    for lane in DDRDLL_CLKIN_LANES:
+        db.nodes[f"HCLK2_{lane}"][1].add((db.rows - 1, 1, lane))
 
 
 #: The HCLK lanes the database's IOLOGIC `FCLK` pips leave out.  Apicula

@@ -226,6 +226,39 @@ struct GowinGlobalRouter
         return false;
     }
 
+    bool net_feeds_clkdiv(const NetInfo *net) const
+    {
+        for (auto &usr : net->users) {
+            if (usr.cell != nullptr && usr.cell->type.in(id_CLKDIV, id_CLKDIV2) && usr.port == id_HCLKIN) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool net_feeds_ddrdll(const NetInfo *net) const
+    {
+        for (auto &usr : net->users) {
+            if (usr.cell != nullptr && usr.cell->type == id_DDRDLL && usr.port == id_CLKIN) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The DDRDLL's CLKIN takes either the port tile's CLK0 or an HCLK block-2
+    // lane.  The vendor takes the lane exactly when the clock also drives a
+    // CLKDIV, and CLK0 otherwise (TinyVCMI tools/ddrdll_port_probe.py), so a
+    // pip into DDRDLL_CLKIN is offered on that rule alone.
+    bool ddrdll_clkin_pip_ok(PipId pip, bool via_hclk) const
+    {
+        if (ctx->getWireName(ctx->getPipDstWire(pip))[1].str(ctx) != "DDRDLL_CLKIN") {
+            return true;
+        }
+        const std::string src = ctx->getWireName(ctx->getPipSrcWire(pip))[1].str(ctx);
+        return (src.rfind("HCLK2", 0) == 0) == via_hclk;
+    }
+
     // The point where one HCLK lane both feeds its CLKDIV and leaves the block:
     // a later sink that reaches it already owned by the net joins that lane.
     bool is_hclk_lane_join(WireId wire) const
@@ -363,7 +396,9 @@ struct GowinGlobalRouter
         // and the failure was lost (MEASURED on a DHCE-gated HCLK reaching a
         // CLKDIV and an IOLOGIC FCLK, where the two orders disagreed).
         int reached = 0, missed = 0;
-        bool join_hclk_lane = net_feeds_dqs_fclk(net);
+        // a DDRDLL beside a CLKDIV rides the CLKDIV's lane like a DQS FCLK
+        const bool ddrdll_via_hclk = net_feeds_ddrdll(net) && net_feeds_clkdiv(net);
+        bool join_hclk_lane = net_feeds_dqs_fclk(net) || ddrdll_via_hclk;
         std::vector<PortRef> users;
         for (auto &usr : net->users) {
             users.push_back(usr);
@@ -383,7 +418,11 @@ struct GowinGlobalRouter
             bool bfs_res;
             bfs_res = backwards_bfs_route(
                     net, src, dst, 1000000, false,
-                    [&](PipId pip, WireId src_wire) { return (is_relaxed_sink(usr) || pip_filter(pip, src)); }, path,
+                    [&](PipId pip, WireId src_wire) {
+                        return ddrdll_clkin_pip_ok(pip, ddrdll_via_hclk) &&
+                               (is_relaxed_sink(usr) || pip_filter(pip, src));
+                    },
+                    path,
                     join_hclk_lane);
             if (bfs_res) {
                 ++reached;
@@ -399,21 +438,28 @@ struct GowinGlobalRouter
             // FCLK, which this database offers lanes 0 and 2 only -- takes
             // another, and the divided clock then leaves the block on a
             // different lane from the fast one.  Say so rather than ship it.
-            pool<IdString> lanes;
+            // The wires are HCLK_MUX_ALPHA<block><lane>: a net that also
+            // clocks another bank's serializers enters a second block, which
+            // is not a split; two lanes within one block is.
+            dict<std::string, pool<std::string>> lanes;
             for (auto &wire : net->wires) {
                 if (is_hclk_lane_join(wire.first)) {
-                    lanes.insert(ctx->getWireName(wire.first)[1]);
+                    const std::string name = ctx->getWireName(wire.first)[1].str(ctx);
+                    lanes[name.substr(0, name.size() - 1)].insert(name);
                 }
             }
-            if (lanes.size() > 1) {
+            for (auto &block : lanes) {
+                if (block.second.size() < 2) {
+                    continue;
+                }
                 std::string names;
-                for (auto lane : lanes) {
-                    names += (names.empty() ? "" : ", ") + lane.str(ctx);
+                for (auto &lane : block.second) {
+                    names += (names.empty() ? "" : ", ") + lane;
                 }
                 log_warning("Net '%s' feeds a DQS FCLK but is carried on %d HCLK lanes (%s); the vendor keeps a "
                             "DDR3 lane's CLKDIV and FCLK sinks on one lane, and an IOLOGIC FCLK reaches lanes 0 "
                             "and 2 only.\n",
-                            ctx->nameOf(net), int(lanes.size()), names.c_str());
+                            ctx->nameOf(net), int(block.second.size()), names.c_str());
             }
         }
         RouteResult routed = reached == 0 ? NOT_ROUTED : (missed == 0 ? ROUTED_ALL : ROUTED_PARTIALLY);

@@ -1478,6 +1478,34 @@ def extend_dqs_fclk_lanes(db: chipdb):
             node[1].add((y, x, lane))
 
 
+#: The HCLK lanes the database's IOLOGIC `FCLK` pips leave out.  Apicula
+#: offers lanes 0 and 2 only, the two its encoding can spell, but Gowin EDA
+#: 1.9.11.03 clocks a DDR3 lane's `OSER8_MEM` and `IDES8_MEM` from all four:
+#: MEASURED 2026-10-24 on side A of every lane and side B of lanes 0 and 2,
+#: each lane its own `FCLKSEL` fuses (TinyVCMI TOOL-017).  The lane is an
+#: IOLOGIC attribute, so these pips, like the database's own, carry no fuse.
+DQ_LANE_EXTRA_FCLK = ("HCLK21", "HCLK23")
+
+
+def extend_dq_lane_fclk(db: chipdb):
+    """Give the DDR3 lane IOLOGIC positions `FCLK` pips from lanes 1 and 3.
+
+    Only the lane cells, marked by `mark_dqs_site`, take them; every other
+    IO cell keeps the database's lanes 0 and 2.
+    """
+    for lane in DQ_LANE_EXTRA_FCLK:
+        node = db.nodes.get(f"HCLK2_{lane}")
+        if node is None:
+            raise ValueError(f"HCLK lane node HCLK2_{lane} is missing from the database")
+        for x, y in DQ_LANE_TILES:
+            pips = db.hclk_pips.get((y, x), {})
+            for dest in ("FCLKA", "FCLKB"):
+                if dest not in pips:
+                    raise ValueError(f"X{x}Y{y} has no {dest} pips to extend")
+                pips[dest][lane] = set()
+            node[1].add((y, x, lane))
+
+
 def create_dqs_bel(tt: TileType, db: chipdb, x: int, y: int):
     """Create a measured `DQS` bel; see `DQS_LANES`."""
     if (x, y) not in DQS_SITES:
@@ -2663,6 +2691,7 @@ def main():
     # its four FCLK lanes, both before any tile type or node is built.
     mark_dqs_site(db)
     extend_dqs_fclk_lanes(db)
+    extend_dq_lane_fclk(db)
 
     # Setup tile grid
     for x in range(X):

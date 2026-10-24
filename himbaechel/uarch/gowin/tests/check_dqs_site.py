@@ -35,6 +35,11 @@ the model are easy to break without any build failing:
       `create_dedicated_links` refuses a wire that already belongs to a node,
       because a tile wire can belong to one node only.
 
+  test_dq_lane_cells_take_fclk_from_every_lane
+      After `extend_dq_lane_fclk`, every DDR3 lane cell's FCLKA and FCLKB
+      take all four block-2 lanes and sit in the lane-1 and lane-3 nodes,
+      while an IO cell outside the lanes keeps lanes 0 and 2 only.
+
   test_dq_lane_positions_are_iologic_of_marked_tiles
       Every lane position names an IOLOGIC bel the database has, no position
       belongs to two lanes, every tile is marked so the memory-mode pins reach
@@ -142,6 +147,23 @@ def test_every_fclk_lane_reaches_every_site():
         members = {tuple(m) for m in db.nodes[f"HCLK2_{lane}"][1]}
         for x, y in gen.DQS_SITES:
             assert (y, x, lane) in members, f"{lane} does not reach the DQS site X{x}Y{y}"
+
+
+def test_dq_lane_cells_take_fclk_from_every_lane():
+    db = copy.copy(_db())
+    db.nodes = copy.deepcopy(db.nodes)
+    db.hclk_pips = copy.deepcopy(db.hclk_pips)
+    gen.extend_dq_lane_fclk(db)
+    lanes = {f"HCLK2{n}" for n in range(4)}
+    for x, y in gen.DQ_LANE_TILES:
+        for dest in ("FCLKA", "FCLKB"):
+            assert set(db.hclk_pips[(y, x)][dest]) == lanes, f"X{x}Y{y} {dest}"
+        for lane in gen.DQ_LANE_EXTRA_FCLK:
+            assert (y, x, lane) in {tuple(m) for m in db.nodes[f"HCLK2_{lane}"][1]}, \
+                f"X{x}Y{y} is not in the {lane} node"
+    outside = (0, 72)                    # a block-2 IO cell on no DDR3 lane row
+    assert outside not in gen.DQ_LANE_TILES
+    assert set(db.hclk_pips[(outside[1], outside[0])]["FCLKA"]) == {"HCLK20", "HCLK22"}
 
 
 class _FakeDb:

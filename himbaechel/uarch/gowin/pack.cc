@@ -190,6 +190,34 @@ void GowinPacker::drop_unwired_constant_inputs(CellInfo *ci)
     }
 }
 
+// A `PLL` output's enable, `ENCLK<n>`, is a routed input on the GW5AST-138C
+// (TinyVCMI tools/pll_enclk_probe.py): a signal or a constant reaches it on
+// an ordinary pip and no PLL fuse moves.  Every open-flow PLL image built
+// before the port was modelled left it undriven and its outputs ran, so the
+// pin's idle state is "enabled".  Routing a constant that means the same
+// thing would only change those images, so a tie-off is dropped when it is
+// high, or low on an output nothing uses; a signal, and a low tie on a used
+// output, which asks for that output to stop, are routed.
+void GowinPacker::drop_idle_output_enables(CellInfo *ci)
+{
+    std::vector<IdString> idle;
+    for (int i = 0; i < 7; ++i) {
+        IdString port = ctx->idf("ENCLK%d", i);
+        NetInfo *net = ci->getPort(port);
+        if (net == nullptr) {
+            continue;
+        }
+        NetInfo *out = ci->getPort(ctx->idf("CLKOUT%d", i));
+        bool used = out != nullptr && !out->users.empty();
+        if (net->name == ctx->id("$PACKER_VCC") || (net->name == ctx->id("$PACKER_GND") && !used)) {
+            idle.push_back(port);
+        }
+    }
+    for (IdString port : idle) {
+        ci->disconnectPort(port);
+    }
+}
+
 // ===================================
 // PLL
 // ===================================
@@ -205,6 +233,9 @@ void GowinPacker::pack_pll(void)
         if (ci.type.in(id_rPLL, id_PLLVR, id_PLLA, id_PLL)) {
             gwu.remove_brackets(&ci);
             drop_unwired_constant_inputs(&ci);
+            if (ci.type == id_PLL) {
+                drop_idle_output_enables(&ci);
+            }
 
             // If CLKIN is connected to a special pin, then it makes sense
             // to try to place the PLL so that it uses a direct connection

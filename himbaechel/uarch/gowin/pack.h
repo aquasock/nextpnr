@@ -46,6 +46,7 @@ struct GowinPacker
 
     // PLL
     void drop_unwired_constant_inputs(CellInfo *ci);
+    void drop_idle_output_enables(CellInfo *ci);
     void pack_pll(void);
 
     // Clocks
